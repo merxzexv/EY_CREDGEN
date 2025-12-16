@@ -16,6 +16,7 @@ from agents.sales_agent import SalesAgent
 from agents.fraud_agent import FraudAgent
 from utils.pdf_generator import generate_sanction_letter as generate_sanction_pdf
 from models.gemini_service import GeminiService
+from models.openrouter_service import OpenRouterService
 
 # Load environment variables
 load_dotenv()
@@ -50,7 +51,16 @@ master_agent = MasterAgent()
 underwriting_agent = UnderwritingAgent()
 sales_agent = SalesAgent()
 fraud_agent = FraudAgent()
-gemini_service = GeminiService()
+# Initialize Active LLM Service
+llm_provider = os.getenv("LLM_PROVIDER", "gemini").lower().strip()
+llm_service = None
+
+if llm_provider == "openrouter":
+    llm_service = OpenRouterService()
+    print(f"Initialized OpenRouter Service (Provider: {llm_provider})")
+else:
+    llm_service = GeminiService()
+    print(f"Initialized Gemini Service (Provider: {llm_provider})")
 
 # Cleanup thread for expired sessions
 def cleanup_sessions():
@@ -340,10 +350,10 @@ def chat():
         
         # Process the input
         # --- MEDIATOR LOGIC ---
-        gemini_mode = os.getenv("GEMINI_MODE", "disabled").lower().strip()
+        gemini_mode = os.getenv("LLM_MODE", "disabled").lower().strip()
         
         # Load base prompt and dynamic context
-        base_prompt = os.getenv("GEMINI_SYSTEM_PROMPT")
+        base_prompt = os.getenv("LLM_SYSTEM_PROMPT")
         bank_context = get_bank_context()
         
         if bank_context:
@@ -353,20 +363,21 @@ def chat():
 
         response = None
         
-        # Mode 1: Enabled (Gemini Only / Primary)
+        # Mode 1: Enabled (AI Only / Primary)
         if gemini_mode == "enabled":
             try:
                 # Wrap with system prompt + user prompt
-                gemini_resp = gemini_service.generate_response(user_input, system_prompt)
+                # Uses global llm_service initialized at startup
+                llm_resp = llm_service.generate_response(user_input, system_prompt)
                 
-                if gemini_resp.get("intent") != "error":
+                if llm_resp.get("intent") != "error":
                     # Map to existing schema
                     response = {
-                        "message": gemini_resp["message"],
-                        "suggestions": gemini_resp.get("suggestions", []),
+                        "message": llm_resp["message"],
+                        "suggestions": llm_resp.get("suggestions", []),
                         "worker": "none",
                         "action": "none",
-                        "intent": "gemini_response",
+                        "intent": "llm_response",
                         "stage": user_master_agent.state["stage"].value,
                         "session_id": session_id,
                         # We don't perform deep state updates in pure enabled mode as per "mediator" logic instructions
@@ -395,16 +406,15 @@ def chat():
                 ]
                 
                 if intent in generative_intents:
-                    # Use Gemini for natural language generation
-                    gemini_resp = gemini_service.generate_response(
-                        user_input, 
-                        system_prompt + f"\n[Context: Detected Intent '{intent.value}']"
-                    )
+                    # Use AI for natural language generation
+                    context_prompt = system_prompt + f"\n[Context: Detected Intent '{intent.value}']"
                     
-                    if gemini_resp.get("intent") != "error":
+                    llm_resp = llm_service.generate_response(user_input, context_prompt)
+                    
+                    if llm_resp.get("intent") != "error":
                         response = {
-                            "message": gemini_resp["message"],
-                            "suggestions": gemini_resp.get("suggestions", []),
+                            "message": llm_resp["message"],
+                            "suggestions": llm_resp.get("suggestions", []),
                             "worker": "none",
                             "action": "none",
                             "intent": intent.value,
@@ -418,7 +428,7 @@ def chat():
                     response = user_master_agent.handle(user_input)
 
             except Exception as e:
-                print(f"Gemini Hybrid Mode Error: {e}")
+                print(f"OpenRouter Hybrid Mode Error: {e}")
                 response = user_master_agent.handle(user_input)
 
         # Mode 3: Disabled (Default to existing backend)

@@ -106,7 +106,8 @@ def initialize_user_session(session_id):
             'master_agent': MasterAgent(),  # Create new instance per session
             'last_activity': time.time(),
             'created_at': datetime.now().isoformat(),
-            'interaction_count': 0
+            'interaction_count': 0,
+            'chat_history': []
         }
     
     update_session_activity(session_id)
@@ -364,24 +365,74 @@ def chat():
         response = None
         
         # Mode 1: Enabled (AI Only / Primary)
+        # Mode 1: Enabled (AI Only / Primary)
         if gemini_mode == "enabled":
             try:
-                # Wrap with system prompt + user prompt
-                # Uses global llm_service initialized at startup
-                llm_resp = llm_service.generate_response(user_input, system_prompt)
+                # --- BACKEND LOGIC RESTORATION ---
+                # 1. Update interaction history
+                if 'chat_history' not in session:
+                    session['chat_history'] = []
+                
+                # 2. Extract entities and update state (The "Storage" part)
+                detected_entities = user_master_agent.extract_entities(user_input)
+                detected_intent, _ = user_master_agent.detect_intent(user_input)
+                
+                # Only update if meaningful
+                user_master_agent.update_state(detected_entities, detected_intent)
+                
+                # 3. Check for specific transition to workers based on collected data
+                # This ensures we don't just "talk" but actually "do" things
+                worker_to_trigger = "none"
+                current_stage = user_master_agent.state.get("stage")
+                
+                # String comparison to be safe if Enum not imported
+                stage_val = current_stage.value if hasattr(current_stage, "value") else str(current_stage)
+                
+                if stage_val == "underwriting":
+                    worker_to_trigger = "underwriting"
+                elif stage_val == "fraud_check":
+                    worker_to_trigger = "fraud"
+                
+                # 4. Prepare Context for LLM
+                # We inject the current state so the LLM knows what it has and what it needs
+                state_context = f"""
+[SYSTEM CONTEXT - DATA COLLECTED]
+Current Stage: {stage_val}
+Collected Data: {json.dumps({k: v for k, v in user_master_agent.state['entities'].items() if v}, indent=2)}
+Missing Required Fields: {list(user_master_agent.state['missing_fields'])}
+Missing KYC Fields: {list(user_master_agent.state['missing_kyc_fields'])}
+Fraud Check Passed: {user_master_agent.state.get('fraud_check_passed', False)}
+[INSTRUCTION]
+If the user provides missing information, acknowledge it.
+If all required fields are present (Missing Required Fields is empty), inform the user you are proceeding to check eligibility.
+"""
+                final_system_prompt = f"{system_prompt}\n{state_context}"
+
+                # 5. Generate Response with History
+                # Pass history excluding current message (which is passed as user_input)
+                llm_resp = llm_service.generate_response(
+                    user_input, 
+                    final_system_prompt, 
+                    chat_history=session['chat_history'][-10:] # Keep last 10 turns context
+                )
+                
+                # Store user message in history
+                session['chat_history'].append({"role": "user", "content": user_input})
                 
                 if llm_resp.get("intent") != "error":
+                    # Store assistant response in history
+                    if llm_resp.get("message"):
+                        session['chat_history'].append({"role": "assistant", "content": llm_resp["message"]})
+                    
                     # Map to existing schema
                     response = {
                         "message": llm_resp["message"],
                         "suggestions": llm_resp.get("suggestions", []),
-                        "worker": "none",
+                        "worker": worker_to_trigger, # Use backend-determined worker
                         "action": "none",
                         "intent": "llm_response",
-                        "stage": user_master_agent.state["stage"].value,
+                        "stage": stage_val,
                         "session_id": session_id,
-                        # We don't perform deep state updates in pure enabled mode as per "mediator" logic instructions
-                        # but we preserve minimal structure
                     }
                 else:
                     # Fallback to backend on catastrophic failure

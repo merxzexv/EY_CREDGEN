@@ -35,7 +35,13 @@
     </section>
 
     <section class="card">
-      <h2>Existing Context Entries</h2>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2>Existing Context Entries</h2>
+        <form method="post" action="{{ url_for('admin_tune_clear') }}" onsubmit="return confirm('Are you sure you want to clear all context?');">
+          <button type="submit" style="background-color: #ef4444;">Clear All Context</button>
+        </form>
+      </div>
+      <br>
       <table class="data-table">
         <thead>
           <tr>
@@ -68,4 +74,3 @@
   </main>
 </body>
 </html>
-

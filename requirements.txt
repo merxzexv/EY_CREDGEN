@@ -2,6 +2,7 @@
 Flask==3.0.0
 Flask-CORS==4.0.0
 gunicorn  # For production deployment (optional for local testing)
+requests  # Required for OpenRouter service
 
 # --- NLP and Master Agent ---
 # Used by MasterAgent for intent classification and conversation flow

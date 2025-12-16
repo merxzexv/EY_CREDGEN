@@ -56,18 +56,24 @@ Output schema:
             "X-Title": "CredGen AI"
         }
         
+        # Construct messages with history
+        messages = [{"role": "system", "content": full_system_prompt}]
+        
+        # Add conversation history if provided
+        if chat_history:
+            for turn in chat_history:
+                # Map 'assistant' role correctly if needed
+                role = turn.get("role", "user")
+                content = turn.get("content", "")
+                if content:
+                    messages.append({"role": role, "content": content})
+
+        # Add current user message
+        messages.append({"role": "user", "content": user_message})
+
         data = {
             "model": self.model_name,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": full_system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": user_message
-                }
-            ]
+            "messages": messages
         }
         
         try:

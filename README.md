@@ -4,27 +4,27 @@
 
 ---
 
-## 🌟 Key Features
+## Key Features
 
-*   **🤖 Multi-Provider AI Engine:**
+*   **Multi-Provider AI Engine:**
     *   **Flexible Core:** Switch instantly between **Google Gemini Pro** and **OpenRouter (Gemma 2)** based on your preference or availability.
     *   **Hybrid Intelligence:** Combines the natural language fluency of LLMs with deterministic python logic for critical financial calculations (EMI, interest rates).
-*   **💬️ Conversational Application Flow:**
+*   **Conversational Application Flow:**
     *   Replaces rigid forms with a friendly chat interface.
     *   Collects personal details, parses uploaded ID documents, and answers FAQs in real-time.
-*   **🏦 Bank Personalization (System Tuning):**
+*   **Bank Personalization (System Tuning):**
     *   **Admin Dashboard:** Banks can "tune" the bot by inputting their specific context (context, policies, current offers) via a simple admin interface.
     *   **Dynamic Injection:** This context is injected into the AI system prompt in real-time, ensuring the bot always speaks with the bank's unique voice and knowledge.
-*   **🔒 Automated Fraud Detection:**
+*   **Automated Fraud Detection:**
     *   Uses **PyOD** (Python Outlier Detection) and machine learning to analyze applicant data and flag high-risk anomalies instantly.
-*   **⚡ Instant Underwriting & Scoring:**
+*   **Instant Underwriting & Scoring:**
     *   Powered by **XGBoost** models trained on financial datasets to generate real-time risk scores and approval decisions.
-*   **📄 Automatic Documentation:**
+*   **Automatic Documentation:**
     *   Upon approval, the system auto-generates official **PDF Sanction Letters**, signed and stamped, available for immediate download.
 
 ---
 
-## 💬 User Interaction
+##User Interaction
 
 Interacting with CREDGEN AI is designed to be as simple as chatting with a loan officer.
 
@@ -44,7 +44,7 @@ Interacting with CREDGEN AI is designed to be as simple as chatting with a loan 
 
 ---
 
-## ⚙️ Installation & Setup
+##Installation & Setup
 
 Follow these steps to get CREDGEN AI running on your local machine.
 
@@ -115,7 +115,7 @@ python app.py
 
 ---
 
-## 🤝 Contributing Guidelines
+##Contributing Guidelines
 
 We welcome contributions!
 1.  **Fork** the repository.
@@ -126,7 +126,7 @@ We welcome contributions!
 
 ---
 
-## ❓ Troubleshooting & FAQs
+##Troubleshooting & FAQs
 
 **Q: The bot says "AI Service not configured".**
 *   **A:** Ensure you have set a valid `GEMINI_API_KEY` or `OPENROUTER_API_KEY` in your `.env` file and that `LLM_PROVIDER` matches the key you provided.
@@ -136,13 +136,13 @@ We welcome contributions!
 
 ---
 
-## 📄 License
+##License
 
 This project is licensed under the **MIT License**. You are free to use, modify, and distribute this software.
 
 ---
 
-## 🙏 Acknowledgements & References
+##Acknowledgements & References
 
 *   **Google Gemini** & **OpenRouter** for LLM capabilities.
 *   **Flask** framework for the backend.

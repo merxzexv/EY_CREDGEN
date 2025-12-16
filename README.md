@@ -24,7 +24,7 @@
 
 ---
 
-##User Interaction
+## User Interaction
 
 Interacting with CREDGEN AI is designed to be as simple as chatting with a loan officer.
 
@@ -44,7 +44,7 @@ Interacting with CREDGEN AI is designed to be as simple as chatting with a loan 
 
 ---
 
-##Installation & Setup
+## Installation & Setup
 
 Follow these steps to get CREDGEN AI running on your local machine.
 
@@ -103,7 +103,7 @@ python app.py
 
 ---
 
-## 🛠️ Configuration Options
+## Configuration Options
 
 | Variable | Description | Default          |
 | :--- | :--- |:-----------------|
@@ -115,7 +115,7 @@ python app.py
 
 ---
 
-##Contributing Guidelines
+## Contributing Guidelines
 
 We welcome contributions!
 1.  **Fork** the repository.
@@ -126,7 +126,7 @@ We welcome contributions!
 
 ---
 
-##Troubleshooting & FAQs
+## Troubleshooting & FAQs
 
 **Q: The bot says "AI Service not configured".**
 *   **A:** Ensure you have set a valid `GEMINI_API_KEY` or `OPENROUTER_API_KEY` in your `.env` file and that `LLM_PROVIDER` matches the key you provided.
@@ -136,13 +136,13 @@ We welcome contributions!
 
 ---
 
-##License
+## License
 
 This project is licensed under the **MIT License**. You are free to use, modify, and distribute this software.
 
 ---
 
-##Acknowledgements & References
+## Acknowledgements & References
 
 *   **Google Gemini** & **OpenRouter** for LLM capabilities.
 *   **Flask** framework for the backend.

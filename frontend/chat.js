@@ -207,8 +207,17 @@
 
             if (action === 'call_documentation' || action === 'call_documentation_api') {
                 appendMessage('Generating document...', 'bot');
-                await apiCall('/documentation');
+                const response = await apiCall('/documentation');
                 appendMessage('Document generated successfully!', 'bot');
+                if (response.download_url) {
+                    const link = document.createElement('a');
+                    link.href = response.download_url;
+                    link.download = 'Sanction_Letter.pdf'
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    appendMessage('Document has been downloaded.', 'bot');
+                }
             }
 
             if (action === 'call_fraud' || action === 'call_fraud_api') {
@@ -311,4 +320,3 @@
         init();
     }
 })();
-

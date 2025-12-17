@@ -70,20 +70,8 @@ Output schema:
 User Query: {user_message}
 """
             
-            contents = []
-            
-            # Add conversation history
-            if chat_history:
-                for turn in chat_history:
-                    # Map 'assistant' to 'model' for Gemini
-                    role = "model" if turn.get("role") == "assistant" else "user"
-                    contents.append({"role": role, "parts": [{"text": turn.get("content", "")}]})
-            
-            # Add current interaction (with system prompt embedded as we are doing stateless calls)
-            contents.append({"role": "user", "parts": [{"text": prompt}]})
-
             response = self.model.generate_content(
-                contents=contents,
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
                 generation_config=genai.types.GenerationConfig(
                     candidate_count=1,
                     max_output_tokens=500,

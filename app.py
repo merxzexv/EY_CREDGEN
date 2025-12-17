@@ -10,7 +10,7 @@ import json
 from werkzeug.utils import secure_filename
 
 # Import the core agents
-from agents.master_agent import MasterAgent, IntentType
+from agents.master_agent import MasterAgent, ConversationStage, IntentType
 from agents.underwriting_agent import UnderwritingAgent
 from agents.sales_agent import SalesAgent
 from agents.fraud_agent import FraudAgent
@@ -38,7 +38,7 @@ CHAT_LOGS_CSV = os.path.join(CSV_DIR, "chat_logs.csv")
 TUNING_CSV = os.path.join(CSV_DIR, "tuning_content.csv")
 ADMINS_CSV = os.path.join(CSV_DIR, "admin_users.csv")
 
-app.secret_key = os.environ.get("APP_SECRET_KEY", "change-this-secret-key")
+app.secret_key = os.environ.get("APP_SECRET_KEY", "credgen")
 app.config["UPLOAD_FOLDER"] = UPLOADS_DIR
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
 
@@ -47,12 +47,12 @@ user_sessions = {}
 SESSION_TIMEOUT = 1800  # 30 minutes in seconds
 
 # Initialize agents
-master_agent = MasterAgent()
 underwriting_agent = UnderwritingAgent()
 sales_agent = SalesAgent()
 fraud_agent = FraudAgent()
+
 # Initialize Active LLM Service
-llm_provider = os.getenv("LLM_PROVIDER", "gemini").lower().strip()
+llm_provider = os.getenv("LLM_PROVIDER", "openrouter").lower().strip()
 llm_service = None
 
 if llm_provider == "openrouter":
@@ -107,7 +107,7 @@ def initialize_user_session(session_id):
             'last_activity': time.time(),
             'created_at': datetime.now().isoformat(),
             'interaction_count': 0,
-            'chat_history': []
+            'workflow_history': []
         }
     
     update_session_activity(session_id)
@@ -195,6 +195,72 @@ def calculate_emi(principal, rate, tenure_months):
     emi = principal * monthly_rate * (1 + monthly_rate) ** tenure_months / ((1 + monthly_rate) ** tenure_months - 1)
     return round(emi, 2)
 
+def get_bank_context():
+    """Retrieve and concatenate all tuning context from CSV."""
+    try:
+        rows = read_csv(TUNING_CSV)
+        # Extract content field, filter empty
+        contents = [r.get('content', '').strip() for r in rows if r.get('content', '').strip()]
+        if contents:
+            return "\n\n".join(contents)
+    except Exception as e:
+        print(f"Error loading bank context: {e}")
+    return ""
+
+def determine_worker_from_stage(current_stage, intent=None):
+    """Determine which worker to call based on current stage."""
+    worker_map = {
+        ConversationStage.FRAUD_CHECK: "fraud",
+        ConversationStage.UNDERWRITING: "underwriting",
+        ConversationStage.OFFER_PRESENTATION: "sales",
+        ConversationStage.DOCUMENTATION: "documentation",
+        ConversationStage.REJECTION_COUNSELING: "sales"
+    }
+    
+    return worker_map.get(current_stage, "none")
+
+def get_workflow_stage_details(stage):
+    """Get details about a workflow stage."""
+    stage_details = {
+        ConversationStage.COLLECTING_DETAILS: {
+            "name": "Basic Details Collection",
+            "description": "Collecting loan requirements and personal information",
+            "progress": 20,
+            "next": "KYC Collection"
+        },
+        ConversationStage.KYC_COLLECTION: {
+            "name": "KYC Verification",
+            "description": "Collecting identification documents for verification",
+            "progress": 40,
+            "next": "Fraud Detection"
+        },
+        ConversationStage.FRAUD_CHECK: {
+            "name": "Fraud Detection",
+            "description": "Running security checks and verification",
+            "progress": 60,
+            "next": "Underwriting"
+        },
+        ConversationStage.UNDERWRITING: {
+            "name": "Underwriting",
+            "description": "Assessing credit risk and loan eligibility",
+            "progress": 80,
+            "next": "Offer Presentation"
+        },
+        ConversationStage.OFFER_PRESENTATION: {
+            "name": "Offer Presentation",
+            "description": "Presenting loan terms and conditions",
+            "progress": 90,
+            "next": "Documentation"
+        },
+        ConversationStage.DOCUMENTATION: {
+            "name": "Documentation",
+            "description": "Generating sanction letter and final documents",
+            "progress": 100,
+            "next": "Completion"
+        }
+    }
+    
+    return stage_details.get(stage, {"name": "Unknown", "progress": 0})
 
 # --- Admin/CSV Utilities ---
 def ensure_csv(file_path, headers):
@@ -205,14 +271,12 @@ def ensure_csv(file_path, headers):
             writer = _csv.DictWriter(f, fieldnames=headers)
             writer.writeheader()
 
-
 def append_csv(file_path, row, headers):
     import csv as _csv
     ensure_csv(file_path, headers)
     with open(file_path, mode="a", newline="", encoding="utf-8") as f:
         writer = _csv.DictWriter(f, fieldnames=headers)
         writer.writerow(row)
-
 
 def read_csv(file_path):
     import csv as _csv
@@ -221,7 +285,6 @@ def read_csv(file_path):
     with open(file_path, mode="r", newline="", encoding="utf-8") as f:
         reader = _csv.DictReader(f)
         return list(reader)
-
 
 def log_chat_event(session_id, event_type, payload):
     import csv as _csv
@@ -245,13 +308,10 @@ def log_chat_event(session_id, event_type, payload):
     }
     append_csv(CHAT_LOGS_CSV, row, headers)
 
-
 ALLOWED_EXTENSIONS = {"pdf", "jpg", "jpeg", "png"}
-
 
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
-
 
 def seed_default_admin():
     headers = ["username", "password"]
@@ -260,9 +320,7 @@ def seed_default_admin():
     if not admins:
         append_csv(ADMINS_CSV, {"username": "admin", "password": "admin123"}, headers)
 
-
 seed_default_admin()
-
 
 def init_csv_files():
     """Ensure core CSVs exist with headers so they are visible upfront."""
@@ -275,7 +333,6 @@ def init_csv_files():
         'message_text', 'status', 'details'
     ])
     ensure_csv(TUNING_CSV, ['timestamp', 'admin', 'type', 'content', 'filename'])
-
 
 # Create empty CSV files with headers at startup
 init_csv_files()
@@ -299,31 +356,18 @@ def frontend_files(filename):
 
 # --- API Endpoints ---
 
-def get_bank_context():
-    """Retrieve and concatenate all tuning context from CSV."""
-    try:
-        rows = read_csv(TUNING_CSV)
-        # Extract content field, filter empty
-        contents = [r.get('content', '').strip() for r in rows if r.get('content', '').strip()]
-        if contents:
-            return "\n\n".join(contents)
-    except Exception as e:
-        print(f"Error loading bank context: {e}")
-    return ""
-
 @app.route('/chat', methods=['POST'])
 def chat():
     """
-    Primary conversational endpoint.
+    Primary conversational endpoint with OpenRouter enabled mode.
     """
     try:
         session_id = get_session_id(request)
 
-        # Support both JSON and multipart/form-data (for file uploads)
+        # Support both JSON and multipart/form-data
         user_input = ''
         if request.content_type and 'multipart/form-data' in request.content_type:
             user_input = (request.form.get('message') or '').strip()
-            # Files are accepted but currently not processed; this avoids errors when files are sent.
         else:
             data = request.get_json(silent=True) or {}
             user_input = (data.get('message') or '').strip()
@@ -335,7 +379,6 @@ def chat():
             }), 400
         
         # Initialize or retrieve session
-        # Log the user message
         log_chat_event(session_id, 'message', {
             'role': 'user',
             'text': user_input,
@@ -349,12 +392,11 @@ def chat():
         # Get the user's master agent instance
         user_master_agent = session['master_agent']
         
-        # Process the input
-        # --- MEDIATOR LOGIC ---
-        gemini_mode = os.getenv("LLM_MODE", "disabled").lower().strip()
+        # --- LLM MODE HANDLING ---
+        gemini_mode = os.getenv("LLM_MODE", "enabled").lower().strip()
         
         # Load base prompt and dynamic context
-        base_prompt = os.getenv("LLM_SYSTEM_PROMPT")
+        base_prompt = os.getenv("LLM_SYSTEM_PROMPT", "You are CredGen AI, an intelligent loan assistant.")
         bank_context = get_bank_context()
         
         if bank_context:
@@ -364,81 +406,100 @@ def chat():
 
         response = None
         
-        # Mode 1: Enabled (AI Only / Primary)
-        # Mode 1: Enabled (AI Only / Primary)
+        # Mode 1: Enabled (OpenRouter Only / Primary)
         if gemini_mode == "enabled":
             try:
-                # --- BACKEND LOGIC RESTORATION ---
-                # 1. Update interaction history
-                if 'chat_history' not in session:
-                    session['chat_history'] = []
+                # Prepare context with current workflow state
+                current_stage = user_master_agent.state["stage"]
+                workflow_progress = user_master_agent.state.get("workflow_progress", 0)
+                collected_entities = {k: v for k, v in user_master_agent.state["entities"].items() if v}
                 
-                # 2. Extract entities and update state (The "Storage" part)
-                detected_entities = user_master_agent.extract_entities(user_input)
-                detected_intent, _ = user_master_agent.detect_intent(user_input)
+                # Build enhanced system prompt with workflow context
+                stage_details = get_workflow_stage_details(current_stage)
                 
-                # Only update if meaningful
-                user_master_agent.update_state(detected_entities, detected_intent)
+                workflow_prompt = f"""
+                CURRENT WORKFLOW STATE:
+                - Stage: {stage_details.get('name', current_stage.value)}
+                - Progress: {workflow_progress}%
+                - Next Step: {stage_details.get('next', 'Completion')}
+                - Collected Information: {json.dumps(collected_entities, default=str)}
+                - Missing Basic Details: {list(user_master_agent.state['missing_fields'])}
+                - Missing KYC Details: {list(user_master_agent.state['missing_kyc_fields'])}
                 
-                # 3. Check for specific transition to workers based on collected data
-                # This ensures we don't just "talk" but actually "do" things
-                worker_to_trigger = "none"
-                current_stage = user_master_agent.state.get("stage")
+                WORKFLOW SEQUENCE (MUST FOLLOW THIS ORDER):
+                1. BASIC DETAILS: loan_amount, tenure, age, income, name, employment_type, purpose
+                2. KYC COLLECTION: pan, aadhaar, address, pincode
+                3. FRAUD DETECTION: (automated after KYC)
+                4. UNDERWRITING: (automated after fraud check)
+                5. OFFER PRESENTATION: (after approval)
+                6. DOCUMENTATION: (after acceptance)
                 
-                # String comparison to be safe if Enum not imported
-                stage_val = current_stage.value if hasattr(current_stage, "value") else str(current_stage)
+                Your response should:
+                1. Be natural and conversational
+                2. Guide the user through the current stage
+                3. Ask for missing information
+                4. Confirm when a stage is complete
+                """
                 
-                if stage_val == "underwriting":
-                    worker_to_trigger = "underwriting"
-                elif stage_val == "fraud_check":
-                    worker_to_trigger = "fraud"
+                full_system_prompt = f"{system_prompt}\n\n{workflow_prompt}"
                 
-                # 4. Prepare Context for LLM
-                # We inject the current state so the LLM knows what it has and what it needs
-                state_context = f"""
-[SYSTEM CONTEXT - DATA COLLECTED]
-Current Stage: {stage_val}
-Collected Data: {json.dumps({k: v for k, v in user_master_agent.state['entities'].items() if v}, indent=2)}
-Missing Required Fields: {list(user_master_agent.state['missing_fields'])}
-Missing KYC Fields: {list(user_master_agent.state['missing_kyc_fields'])}
-Fraud Check Passed: {user_master_agent.state.get('fraud_check_passed', False)}
-[INSTRUCTION]
-If the user provides missing information, acknowledge it.
-If all required fields are present (Missing Required Fields is empty), inform the user you are proceeding to check eligibility.
-"""
-                final_system_prompt = f"{system_prompt}\n{state_context}"
-
-                # 5. Generate Response with History
-                # Pass history excluding current message (which is passed as user_input)
-                llm_resp = llm_service.generate_response(
-                    user_input, 
-                    final_system_prompt, 
-                    chat_history=session['chat_history'][-10:] # Keep last 10 turns context
-                )
+                # Get response from OpenRouter
+                llm_resp = llm_service.generate_response(user_input, full_system_prompt)
                 
-                # Store user message in history
-                session['chat_history'].append({"role": "user", "content": user_input})
-                
-                if llm_resp.get("intent") != "error":
-                    # Store assistant response in history
-                    if llm_resp.get("message"):
-                        session['chat_history'].append({"role": "assistant", "content": llm_resp["message"]})
+                if llm_resp.get("status") == "success":
+                    # Extract entities if provided by LLM
+                    if "extracted_entities" in llm_resp:
+                        entities = llm_resp["extracted_entities"]
+                        # Clean None values
+                        entities = {k: v for k, v in entities.items() if v is not None}
+                        if entities:
+                            # Update master agent state with extracted entities
+                            intent = IntentType.PROVIDE_INFO if entities else IntentType.UNCLEAR
+                            user_master_agent.update_state(entities, intent)
                     
-                    # Map to existing schema
-                    response = {
-                        "message": llm_resp["message"],
-                        "suggestions": llm_resp.get("suggestions", []),
-                        "worker": worker_to_trigger, # Use backend-determined worker
-                        "action": "none",
-                        "intent": "llm_response",
-                        "stage": stage_val,
-                        "session_id": session_id,
+                    # Determine next worker based on current stage
+                    worker = determine_worker_from_stage(current_stage)
+                    
+                    # Map worker to action
+                    action_map = {
+                        "fraud": "call_fraud_api",
+                        "underwriting": "call_underwriting_api",
+                        "sales": "call_sales_api",
+                        "documentation": "call_documentation_api"
                     }
+                    
+                    response = {
+                        "message": llm_resp.get("message", ""),
+                        "suggestions": llm_resp.get("suggestions", []),
+                        "worker": worker,
+                        "action": action_map.get(worker, "none"),
+                        "intent": "llm_response",
+                        "stage": user_master_agent.state["stage"].value,
+                        "stage_name": stage_details.get("name", ""),
+                        "workflow_progress": user_master_agent.state.get("workflow_progress", 0),
+                        "session_id": session_id,
+                        "entities_collected": collected_entities,
+                        "missing_fields": list(user_master_agent.state['missing_fields']),
+                        "missing_kyc_fields": list(user_master_agent.state['missing_kyc_fields']),
+                        "terminate": False
+                    }
+                    
+                    # Special handling for offer acceptance
+                    if "accept" in user_input.lower() and current_stage == ConversationStage.OFFER_PRESENTATION:
+                        user_master_agent.set_offer_accepted(True)
+                        worker = "sales"
+                        action = "call_sales_api"
+                        response['worker'] = worker
+                        response['action'] = action
+                        response['message'] = "Processing your acceptance..."
+                        
                 else:
-                    # Fallback to backend on catastrophic failure
+                    # Fallback to backend on AI failure
+                    print(f"OpenRouter failed, falling back: {llm_resp.get('error', 'Unknown error')}")
                     response = user_master_agent.handle(user_input)
+                    
             except Exception as e:
-                print(f"Gemini Enabled Mode Error: {e}")
+                print(f"OpenRouter Enabled Mode Error: {e}")
                 response = user_master_agent.handle(user_input)
 
         # Mode 2: Hybrid (Orchestration)
@@ -448,7 +509,6 @@ If all required fields are present (Missing Required Fields is empty), inform th
                 intent, confidence = user_master_agent.detect_intent(user_input)
                 
                 # 2. Define "generative" vs "process" intents
-                # Generative: greeting, help, unclear, maybe open-ended queries
                 generative_intents = [
                     IntentType.GREETING, 
                     IntentType.HELP_GENERAL, 
@@ -458,13 +518,13 @@ If all required fields are present (Missing Required Fields is empty), inform th
                 
                 if intent in generative_intents:
                     # Use AI for natural language generation
-                    context_prompt = system_prompt + f"\n[Context: Detected Intent '{intent.value}']"
+                    context_prompt = system_prompt + f"\n[Context: Detected Intent '{intent.value}', Stage '{user_master_agent.state['stage'].value}']"
                     
                     llm_resp = llm_service.generate_response(user_input, context_prompt)
                     
-                    if llm_resp.get("intent") != "error":
+                    if llm_resp.get("status") == "success":
                         response = {
-                            "message": llm_resp["message"],
+                            "message": llm_resp.get("message", ""),
                             "suggestions": llm_resp.get("suggestions", []),
                             "worker": "none",
                             "action": "none",
@@ -473,9 +533,9 @@ If all required fields are present (Missing Required Fields is empty), inform th
                             "session_id": session_id
                         }
                     else:
-                         response = user_master_agent.handle(user_input)
+                        response = user_master_agent.handle(user_input)
                 else:
-                    # Deterministic tasks (Loan App, KYC, Rates) -> Backend
+                    # Deterministic tasks -> Backend
                     response = user_master_agent.handle(user_input)
 
             except Exception as e:
@@ -488,25 +548,22 @@ If all required fields are present (Missing Required Fields is empty), inform th
             
         # Ensure response is set (safety fallback)
         if response is None:
-             response = user_master_agent.handle(user_input)
+            response = user_master_agent.handle(user_input)
         
         # Update session state
         session['last_state'] = user_master_agent.state.copy()
         
-        # Check if worker needs to be called
-        worker_name = response.get('worker')
+        # Add workflow history
+        if 'workflow_history' not in session:
+            session['workflow_history'] = []
         
-        # Convert worker names to actions
-        action_map = {
-            'underwriting': 'call_underwriting_api',
-            'sales': 'call_sales_api',
-            'fraud': 'call_fraud_api',
-            'documentation': 'call_documentation_api'
-        }
-        
-        if worker_name in action_map:
-            response['action'] = action_map[worker_name]
-            response['session_id'] = session_id
+        session['workflow_history'].append({
+            'timestamp': datetime.now().isoformat(),
+            'stage': user_master_agent.state["stage"].value,
+            'progress': user_master_agent.state.get("workflow_progress", 0),
+            'user_input': user_input[:100],
+            'response': response.get('message', '')[:100]
+        })
         
         # Add session info to response
         response['session_id'] = session_id
@@ -520,7 +577,9 @@ If all required fields are present (Missing Required Fields is empty), inform th
                 'status': None,
                 'details': {
                     'worker': response.get('worker'),
-                    'action': response.get('action')
+                    'action': response.get('action'),
+                    'stage': response.get('stage'),
+                    'progress': response.get('workflow_progress')
                 }
             })
         except Exception:
@@ -532,6 +591,8 @@ If all required fields are present (Missing Required Fields is empty), inform th
         
     except Exception as e:
         print(f"Error in /chat: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'message': 'Sorry, I encountered an error. Please try again.',
             'error': 'server_error',
@@ -555,70 +616,60 @@ def underwrite():
         user_master_agent = session['master_agent']
         current_state = user_master_agent.state
         
-        # Step 1: Run fraud check first
-        fraud_result = fraud_agent.perform_fraud_check(current_state['entities'])
-        
-        # Update master agent with fraud result
-        user_master_agent.set_fraud_result(
-            fraud_score=fraud_result.get('fraud_score', 0),
-            fraud_flag=fraud_result.get('fraud_flag', 'Low')
-        )
-        
-        # Step 2: If high fraud risk, reject immediately
-        if fraud_result.get('fraud_flag') == 'High':
-            user_master_agent.set_underwriting_result(
-                risk_score=999,
-                approval_status=False,
-                interest_rate=0.0
-            )
-            
-            session['fraud_result'] = fraud_result
-            session['last_state'] = user_master_agent.state.copy()
-            
+        # Step 1: Check if KYC is complete (required before underwriting)
+        if current_state['missing_kyc_fields']:
             return jsonify({
-                'message': 'Application rejected due to verification issues.',
-                'approval_status': False,
-                'reason': 'fraud_detected',
-                'fraud_details': fraud_result,
+                'message': 'Please complete KYC details first.',
+                'error': 'kyc_incomplete',
                 'worker': 'none',
-                'next_action': 'terminate'
-            })
+                'next_action': 'collect_kyc'
+            }), 400
         
-        # Step 3: Proceed with underwriting (only if fraud is not High)
+        # Step 2: Check fraud status (must pass before underwriting)
+        if not current_state.get('fraud_check_passed'):
+            return jsonify({
+                'message': 'Fraud check must be completed first.',
+                'error': 'fraud_check_pending',
+                'worker': 'fraud',
+                'action': 'call_fraud_api'
+            }), 400
+        
+        # Step 3: Proceed with underwriting
         underwriting_result = underwriting_agent.perform_underwriting(
-            current_state['entities'],
-            fraud_score=fraud_result.get('fraud_score', 0)
+            current_state['entities']
         )
         
         # Step 4: Update master agent with underwriting result
         user_master_agent.set_underwriting_result(
             risk_score=underwriting_result['risk_score'],
             approval_status=underwriting_result['approval_status'],
-            interest_rate=underwriting_result.get('interest_rate', 12.5)  # Default
+            interest_rate=underwriting_result.get('interest_rate', 12.5)
         )
         
         # Step 5: Generate response based on result
         if underwriting_result['approval_status']:
             response = {
-                'message': 'Your application has been pre-approved!',
+                'message': '✅ Your application has been approved! Generating loan offer...',
                 'approval_status': True,
                 'risk_score': underwriting_result['risk_score'],
                 'interest_rate': underwriting_result.get('interest_rate', 12.5),
                 'worker': 'sales',
-                'action': 'call_sales_api'
+                'action': 'call_sales_api',
+                'stage': 'offer_presentation',
+                'workflow_progress': 80
             }
         else:
             response = {
-                'message': 'Unfortunately, your application was not approved at this time.',
+                'message': '❌ Unfortunately, your application was not approved at this time.',
                 'approval_status': False,
                 'reason': underwriting_result.get('reason', 'risk_assessment'),
                 'worker': 'sales',  # Route to sales for counseling
-                'action': 'call_sales_api'
+                'action': 'call_sales_api',
+                'stage': 'rejection_counseling'
             }
         
         # Update session
         session['underwriting_result'] = underwriting_result
-        session['fraud_result'] = fraud_result
         session['last_state'] = user_master_agent.state.copy()
 
         # Log status change
@@ -629,8 +680,7 @@ def underwrite():
                 'status': 'approved' if underwriting_result['approval_status'] else 'rejected',
                 'details': {
                     'risk_score': underwriting_result.get('risk_score'),
-                    'interest_rate': underwriting_result.get('interest_rate'),
-                    'fraud_score': fraud_result.get('fraud_score')
+                    'interest_rate': underwriting_result.get('interest_rate')
                 }
             })
         except Exception:
@@ -652,6 +702,7 @@ def underwrite():
 def sales_negotiate():
     """
     Worker endpoint for sales and negotiation.
+    Handles both OFFER_PRESENTATION and REJECTION_COUNSELING.
     """
     try:
         session_id = request.headers.get('X-Session-ID')
@@ -664,47 +715,145 @@ def sales_negotiate():
         
         user_master_agent = session['master_agent']
         current_state = user_master_agent.state
+        current_stage = current_state.get('stage')
         
-        # Check stage to determine what kind of sales interaction is needed
-        if current_state.get('stage') == 'offer':
-            # Generate loan offer
-            sales_offer = sales_agent.generate_offer(
-                master_agent_state=current_state,
-                negotiation_request=request.get_json().get('negotiate', False)
-            )
+        # Get request data
+        request_data = request.get_json(silent=True) or {}
+        user_input = request_data.get('message', '')
+        
+        print(f"\n{'='*60}")
+        print(f"SALES ENDPOINT - Stage: {current_stage}")
+        print(f"User input: {user_input}")
+        print(f"Approval Status: {current_state.get('approval_status')}")
+        print(f"Risk Score: {current_state.get('risk_score')}")
+        print(f"{'='*60}")
+        
+        response = {}
+        # Handle based on current stage
+        if current_stage == ConversationStage.OFFER_PRESENTATION:
+            # Check if user wants to negotiate
+            if not user_master_agent.state.get('offer'):
+                # FIRST ENTRY: show offer
+                sales_offer = sales_agent.generate_offer(master_agent_state=current_state, negotiation_request=False)
+                user_master_agent.set_offer(sales_offer)
+
+                response = {
+                    **sales_offer,
+                    'action': 'wait_for_offer_decision',
+                    'stage': 'offer_presentation'
+                }
+            else:
+                negotiation_requested = any(word in user_input.lower() for word in 
+                                        ['negotiate', 'lower', 'reduce', 'better rate', 'discount'])
+                
+                accept_keywords = ['yes', 'accept', 'proceed', 'okay', 'agree', 'approved', 'i accept']
+                offer_accepted = any(word in user_input.lower() for word in accept_keywords)
+                print(f"Negotiation requested: {negotiation_requested}")
+                print(f"Offer Accepted: {offer_accepted}")
+
+                if offer_accepted:
+                    print('User accepted the offer. Moving to documentation.')
+                    user_master_agent.set_offer_accepted(True)
+
+                    existing_offer = user_master_agent.state.get('offer')
+                    user_master_agent.set_offer(existing_offer)
+                    response = {
+                        'message': '✅ Excellent! Your loan offer has been accepted. Generating your sanction letter now...',
+                        'session_id': session_id,
+                        'stage': 'documentation',
+                        'workflow_progress': 95,
+                        'worker': 'documentation',
+                        'action': 'call_documentation_api',
+                        'offer_accepted': True
+                    }
+                    user_master_agent.state['stage'] = ConversationStage.DOCUMENTATION
+                    user_master_agent.state['offer_accepted'] = True
+                elif negotiation_requested:
+                    # Generate loan offer (standard or negotiated)
+                    sales_offer = sales_agent.generate_offer(
+                        master_agent_state=current_state,
+                        negotiation_request=negotiation_requested
+                    )
+                    
+                    # Update master agent with offer
+                    user_master_agent.set_offer(sales_offer)
+                    
+                    response = {
+                        **sales_offer,
+                        'session_id': session_id,
+                        'stage': 'offer_presentation',
+                        'workflow_progress': 90,
+                        'action': 'wait_for_offer_decision'
+                    }
+                else:
+                    response = {
+                        'message': "Please confirm acceptance or request a better offer.",
+                        'stage': 'offer_presentation',
+                        'action': 'wait_for_offer_decision'
+                    }
             
-            # Update master agent with offer
-            user_master_agent.set_offer(sales_offer)
+        elif current_stage == ConversationStage.REJECTION_COUNSELING:
+            print("In REJECTION_COUNSELING mode")
             
-            response = {
-                **sales_offer,
-                'session_id': session_id,
-                'stage': 'offer_presented'
-            }
+            # Check if user accepts alternative offer
+            accept_keywords = ['yes', 'accept', 'proceed', 'okay', 'agree', 'alternative']
+            accept_alternative = any(word in user_input.lower() for word in accept_keywords)
             
-        elif current_state.get('stage') == 'rejection_counseling':
-            # Provide counseling for rejected application
-            counseling_response = sales_agent.provide_counseling(current_state)
-            
-            response = {
-                'message': counseling_response,
-                'session_id': session_id,
-                'stage': 'counseling',
-                'next_steps': [
-                    'Improve credit score',
-                    'Reduce existing debt',
-                    'Reapply in 6 months'
-                ]
-            }
+            if accept_alternative:
+                print("User accepted alternative offer")
+                # Generate alternative offer
+                sales_offer = sales_agent.generate_offer(
+                    master_agent_state=current_state,
+                    negotiation_request=False
+                )
+                
+                user_master_agent.set_offer(sales_offer)
+                user_master_agent.state['stage'] = ConversationStage.OFFER_PRESENTATION
+                user_master_agent.state['approval_status'] = True  # Mark as approved for alternative
+                
+                response = {
+                    **sales_offer,
+                    'session_id': session_id,
+                    'stage': 'offer_presentation',
+                    'workflow_progress': 90,
+                    'action': 'wait_for_offer_decision',
+                    'message': "Great! Here's your alternative loan offer:"
+                }
+            else:
+                # Provide counseling
+                counseling_response = sales_agent.provide_counseling(current_state)
+                
+                response = {
+                    'message': counseling_response,
+                    'session_id': session_id,
+                    'stage': 'rejection_counseling',
+                    'workflow_progress': 70,
+                    'worker': 'sales',
+                    'action': 'provide_counseling',
+                    'offer_available': True,
+                    'suggestions': [
+                        {'text': 'Yes, show me alternative amount', 'action': 'accept_alternative'},
+                        {'text': 'No, I\'ll improve my profile first', 'action': 'decline_alternative'},
+                        {'text': 'Explain why I was rejected', 'action': 'explain_rejection'}
+                    ]
+                }
         
         else:
+            # Default response if stage is not recognized
             response = {
-                'message': 'I need more information to provide an offer.',
+                'message': 'I need more information to provide an offer. Let me check your application status.',
                 'session_id': session_id,
-                'worker': 'none'
+                'worker': 'none',
+                'action': 'check_status'
             }
         
+        # Update session
         session['last_state'] = user_master_agent.state.copy()
+        
+        print(f"\nResponse from /sales endpoint:")
+        print(f"Stage: {response.get('stage')}")
+        print(f"Message preview: {response.get('message', '')[:100]}...")
+        print(f"{'='*60}\n")
 
         resp = jsonify(response)
         resp.headers['X-Session-ID'] = session_id
@@ -712,9 +861,12 @@ def sales_negotiate():
         
     except Exception as e:
         print(f"Error in /sales: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'error': 'sales_processing_failed',
-            'message': 'Failed to process sales request.'
+            'message': 'Failed to process sales request.',
+            'details': str(e)
         }), 500
 
 @app.route('/fraud', methods=['POST'])
@@ -733,6 +885,24 @@ def fraud_check():
         
         user_master_agent = session['master_agent']
         current_state = user_master_agent.state
+        
+        # Check if basic details are complete
+        if current_state['missing_fields']:
+            return jsonify({
+                'message': 'Please complete basic details first.',
+                'error': 'basic_details_incomplete',
+                'worker': 'none',
+                'next_action': 'collect_details'
+            }), 400
+        
+        # Check if KYC is complete
+        if current_state['missing_kyc_fields']:
+            return jsonify({
+                'message': 'Please complete KYC details first.',
+                'error': 'kyc_incomplete',
+                'worker': 'none',
+                'next_action': 'collect_kyc'
+            }), 400
         
         # Perform fraud check
         fraud_result = fraud_agent.perform_fraud_check(current_state['entities'])
@@ -754,7 +924,7 @@ def fraud_check():
         }
         
         if fraud_result['fraud_flag'] == 'High':
-            response['message'] = 'Fraud check failed. Application cannot proceed.'
+            response['message'] = '❌ Fraud check failed. Application cannot proceed.'
             response['worker'] = 'none'
             response['next_action'] = 'terminate'
             try:
@@ -767,14 +937,14 @@ def fraud_check():
             except Exception:
                 pass
         else:
-            response['message'] = 'Fraud check passed.'
+            response['message'] = '✅ Fraud check passed. Proceeding to underwriting...'
             response['worker'] = 'underwriting'
             response['action'] = 'call_underwriting_api'
             try:
                 log_chat_event(session_id, 'action', {
                     'role': 'system',
                     'text': 'fraud_check_passed',
-                    'status': None,
+                    'status': 'approved',
                     'details': fraud_result
                 })
             except Exception:
@@ -811,7 +981,8 @@ def documentation():
                 'message': 'Please accept the offer first.'
             }), 400
         
-        if not all(current_state['entities'].get(field) for field in ['pan', 'aadhaar', 'address']):
+        entities = current_state.get('entities', {})
+        if not all(entities.get(field) for field in ['pan', 'aadhaar', 'address']):
             return jsonify({
                 'error': 'kyc_incomplete',
                 'message': 'KYC details are incomplete.'
@@ -822,9 +993,10 @@ def documentation():
         pdf_path = generate_sanction_pdf(current_state)
         
         # Update final state
-        user_master_agent.state['stage'] = 'closed'
+        user_master_agent.state['stage'] = ConversationStage.CLOSED
         user_master_agent.state['sanction_letter'] = letter_data['metadata']['sanction_id']
         user_master_agent.state['letter_generated_at'] = datetime.now().isoformat()
+        user_master_agent.state['workflow_progress'] = 100
         
         # Update session
         session['sanction_letter'] = letter_data
@@ -833,12 +1005,13 @@ def documentation():
         session['completed_at'] = datetime.now().isoformat()
 
         resp = jsonify({
-            'message': 'Sanction letter generated successfully!',
+            'message': '✅ Sanction letter generated successfully!',
             'letter_content': letter_data['content'],
             'metadata': letter_data['metadata'],
             'session_id': session_id,
             'stage': 'completed',
-            'download_url': f'/download/{session_id}',  # Mock download URL
+            'workflow_progress': 100,
+            'download_url': f'/download/{session_id}',
             'next_action': 'download_letter'
         })
 
@@ -875,6 +1048,31 @@ def download_sanction_letter(session_id):
     directory, filename = os.path.split(pdf_path)
     return send_from_directory(directory, filename, as_attachment=True)
 
+@app.route('/workflow/status', methods=['GET'])
+def workflow_status():
+    """Get current workflow status."""
+    session_id = request.headers.get('X-Session-ID')
+    
+    if not session_id or session_id not in user_sessions:
+        return jsonify({'error': 'Invalid session'}), 400
+    
+    session = user_sessions[session_id]
+    user_master_agent = session['master_agent']
+    
+    # Get workflow status from master agent
+    workflow_status = user_master_agent.get_workflow_status()
+    
+    return jsonify({
+        "session_id": session_id,
+        "current_stage": workflow_status["current_stage"],
+        "progress": workflow_status["progress"],
+        "completed_stages": workflow_status["completed_stages"],
+        "missing_fields": workflow_status["missing_fields"],
+        "missing_kyc_fields": workflow_status["missing_kyc_fields"],
+        "entities_collected": {k: v for k, v in user_master_agent.state["entities"].items() if v},
+        "next_worker": determine_worker_from_stage(user_master_agent.state["stage"])
+    })
+
 @app.route('/session/<session_id>', methods=['GET'])
 def get_session(session_id):
     """Get session status (for debugging)."""
@@ -886,7 +1084,8 @@ def get_session(session_id):
             'created_at': session.get('created_at'),
             'last_activity': session.get('last_activity'),
             'interaction_count': session.get('interaction_count', 0),
-            'current_stage': session.get('master_agent').state.get('stage'),
+            'current_stage': session.get('master_agent').state.get('stage').value,
+            'workflow_progress': session.get('master_agent').state.get('workflow_progress', 0),
             'has_offer': session.get('master_agent').state.get('offer_accepted', False)
         })
     return jsonify({'error': 'Session not found'}), 404
@@ -899,7 +1098,8 @@ def reset_session(session_id):
             'master_agent': MasterAgent(),
             'last_activity': time.time(),
             'created_at': datetime.now().isoformat(),
-            'interaction_count': 0
+            'interaction_count': 0,
+            'workflow_history': []
         }
         return jsonify({'message': 'Session reset successfully.'})
     return jsonify({'error': 'Session not found'}), 404
@@ -911,20 +1111,19 @@ def health_check():
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
         'active_sessions': len(user_sessions),
+        'llm_provider': llm_provider,
+        'llm_mode': os.getenv("LLM_MODE", "enabled"),
         'agents': ['master', 'underwriting', 'sales', 'fraud']
     })
-
 
 # --- File uploads serving (for admin) ---
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-
 # --- Admin helpers ---
 def is_admin_logged_in():
     return session.get('admin_username') is not None
-
 
 @app.route('/bank/admin/login', methods=['GET', 'POST'])
 def admin_login():
@@ -939,12 +1138,10 @@ def admin_login():
         return render_template('admin_login.html', error='Invalid credentials')
     return render_template('admin_login.html')
 
-
 @app.route('/bank/admin/logout')
 def admin_logout():
     session.clear()
     return redirect(url_for('admin_login'))
-
 
 @app.route('/bank/admin/dashboard')
 def admin_dashboard():
@@ -952,7 +1149,6 @@ def admin_dashboard():
         return redirect(url_for('admin_login'))
     applications = read_csv(APPLICATIONS_CSV)
     return render_template('admin_dashboard.html', applications=applications)
-
 
 @app.route('/bank/admin/update_application', methods=['POST'])
 def update_application():
@@ -995,7 +1191,6 @@ def update_application():
 
     return redirect(url_for('admin_dashboard'))
 
-
 @app.route('/bank/admin/tune', methods=['GET', 'POST'])
 def admin_tune():
     if not is_admin_logged_in():
@@ -1024,7 +1219,6 @@ def admin_tune():
     items = read_csv(TUNING_CSV)
     return render_template('admin_tune.html', items=items)
 
-
 @app.route('/bank/admin/tune/clear', methods=['POST'])
 def admin_tune_clear():
     if not is_admin_logged_in():
@@ -1039,14 +1233,12 @@ def admin_tune_clear():
 
     return redirect(url_for('admin_tune'))
 
-
 @app.route('/bank/admin/logs')
 def admin_logs():
     if not is_admin_logged_in():
         return redirect(url_for('admin_login'))
     logs = read_csv(CHAT_LOGS_CSV)
     return render_template('admin_logs.html', logs=logs)
-
 
 # --- Application submission (for dashboard) ---
 @app.route('/api/widget/submit_application', methods=['POST'])
@@ -1083,7 +1275,6 @@ def submit_application():
 
     return jsonify({'ok': True, 'session_id': session_id})
 
-
 # --- File upload endpoint for widget/applications ---
 @app.route('/api/widget/upload', methods=['POST'])
 def widget_upload():
@@ -1108,7 +1299,6 @@ def widget_upload():
 
     return jsonify({'error': 'Invalid file type'}), 400
 
-
 @app.template_filter('load_json')
 def load_json_filter(s):
     try:
@@ -1120,16 +1310,18 @@ if __name__ == '__main__':
     print("=" * 60)
     print("CREDGEN Loan Application System")
     print("=" * 60)
-    print("Server starting on http://0.0.0.0:5000")
+    print(f"Server starting on http://0.0.0.0:5000")
+    print(f"LLM Provider: {llm_provider}")
+    print(f"LLM Mode: {os.getenv('LLM_MODE', 'enabled')}")
     print("Available endpoints:")
-    print("  GET  /               - Frontend page (index.html)")
-    print("  GET  /frontend/*     - Frontend static files (CSS, JS)")
-    print("  POST /chat           - Main conversation endpoint")
-    print("  POST /underwrite     - Underwriting process")
-    print("  POST /sales          - Sales and negotiation")
-    print("  POST /fraud          - Fraud detection")
-    print("  POST /documentation  - Generate sanction letter")
-    print("  GET  /health         - Health check")
+    print("  GET  /                     - Frontend page (index.html)")
+    print("  POST /chat                 - Main conversation endpoint")
+    print("  POST /underwrite           - Underwriting process")
+    print("  POST /sales                - Sales and negotiation")
+    print("  POST /fraud                - Fraud detection")
+    print("  POST /documentation        - Generate sanction letter")
+    print("  GET  /workflow/status      - Check workflow progress")
+    print("  GET  /health               - Health check")
     print("=" * 60)
     
     app.run(host='0.0.0.0', port=5000, debug=True)
